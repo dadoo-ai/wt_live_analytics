@@ -1,1 +1,174 @@
- 
+
+services:
+  # Kafka en mode KRaft (sans Zookeeper)
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - analytics-network
+
+  # Kafka UI
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+    networks:
+      - analytics-network
+
+  # TimescaleDB (PostgreSQL + extension time series)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: analytics
+      POSTGRES_USER: analytics_user
+      POSTGRES_PASSWORD: analytics_password
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+    #   - ./timescaledb/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - analytics-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics_user -d analytics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API d'enrichissement (FastAPI)
+#   enrichment-api:
+#     build:
+#       context: ./enrichment-api
+#       dockerfile: Dockerfile
+#     container_name: enrichment-api
+#     ports:
+#       - "8000:8000"
+#     environment:
+#       DATABASE_URL: postgresql://analytics_user:analytics_password@timescaledb:5432/analytics
+#     depends_on:
+#       timescaledb:
+#         condition: service_healthy
+#     volumes:
+#       - ./enrichment-api:/app
+#     networks:
+#       - analytics-network
+#     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Kafka Producer (polling Matomo)
+  kafka-producer:
+    build:
+      context: ./kafka-producer
+      dockerfile: Dockerfile
+    container_name: kafka-producer
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MATOMO_API_URL: https://demo.matomo.cloud/
+      MATOMO_TOKEN: anonymous
+      MATOMO_SITE_ID: 1
+      POLLING_INTERVAL: 5
+    volumes:
+      - ./kafka-producer:/app
+    networks:
+      - analytics-network
+    restart: unless-stopped
+
+  # Spark Master
+#   spark-master:
+#     image: bitnami/spark:3.5
+#     container_name: spark-master
+#     environment:
+#       - SPARK_MODE=master
+#       - SPARK_RPC_AUTHENTICATION_ENABLED=no
+#       - SPARK_RPC_ENCRYPTION_ENABLED=no
+#       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+#       - SPARK_SSL_ENABLED=no
+#     ports:
+#       - "8081:8080"  # Spark Master UI
+#       - "7077:7077"  # Spark Master port
+#     networks:
+#       - analytics-network
+
+#   # Spark Worker
+#   spark-worker:
+#     image: bitnami/spark:3.5
+#     container_name: spark-worker
+#     depends_on:
+#       - spark-master
+#     environment:
+#       - SPARK_MODE=worker
+#       - SPARK_MASTER_URL=spark://spark-master:7077
+#       - SPARK_WORKER_MEMORY=2G
+#       - SPARK_WORKER_CORES=2
+#       - SPARK_RPC_AUTHENTICATION_ENABLED=no
+#       - SPARK_RPC_ENCRYPTION_ENABLED=no
+#       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+#       - SPARK_SSL_ENABLED=no
+#     networks:
+#       - analytics-network
+
+#   # Spark Streaming Job
+#   spark-streaming:
+#     build:
+#       context: ./spark-streaming
+#       dockerfile: Dockerfile
+#     container_name: spark-streaming
+#     depends_on:
+#       spark-master:
+#         condition: service_started
+#       kafka:
+#         condition: service_started
+#       enrichment-api:
+#         condition: service_started
+#       timescaledb:
+#         condition: service_healthy
+#     environment:
+#       SPARK_MASTER_URL: spark://spark-master:7077
+#       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+#       ENRICHMENT_API_URL: http://enrichment-api:8000
+#       DATABASE_URL: postgresql://analytics_user:analytics_password@timescaledb:5432/analytics
+#     volumes:
+#       - ./spark-streaming:/app
+#     networks:
+#       - analytics-network
+#     command: >
+#       spark-submit
+#       --master spark://spark-master:7077
+#       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
+#       /app/streaming_job.py
+
+networks:
+  analytics-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  timescaledb-data:
